@@ -1,150 +1,71 @@
-# Verdict — GenLayer Intelligent Escrow & Bounty Adjudicator
+# Verdict — Intelligent Escrow & Bounty Adjudicator
 
-Verdict is an Intelligent Contract built on GenLayer that enables escrowed jobs and bounties to be resolved using natural-language requirements, public web evidence, and AI-validator consensus.
+A GenLayer Intelligent Contract that escrows a bounty between a funder and
+a worker, and uses an LLM-based multi-validator consensus to adjudicate
+whether the submitted deliverable satisfies a funder-defined rubric —
+then automatically routes the payout.
 
 ## What it does
 
-A funder creates a job with:
+1. A **funder** deploys the contract with a `rubric` (the pass/fail
+   criteria) and a `duration_seconds` window.
+2. The funder calls `fund()`, sending GEN into escrow and starting the
+   countdown to the deadline.
+3. A **worker** calls `submit()` with a `deliverable_url` and an
+   `evidence_url` before the deadline. Once accepted, the submission is
+   locked — no further submissions are possible.
+4. After the deadline, anyone can call `resolve()`. This:
+   - Fetches the deliverable and evidence content.
+   - Has the leader validator ask an LLM to judge the content against
+     the rubric, returning `pass`, `fail`, or `insufficient_evidence`.
+   - Has every other validator **independently** re-fetch the same
+     content and **independently** ask the LLM for its own verdict —
+     without seeing the leader's answer.
+   - Only reaches consensus if a validator's verdict, payout recipient,
+     and payout amount all **exactly match** the leader's. This
+     prevents two validators from reaching opposite settlements on the
+     same job — a validator either agrees fully or rejects the leader.
+   - Automatically transfers the escrowed stake: to the **worker** on
+     `pass`, or back to the **funder** on `fail` / `insufficient_evidence`.
+5. If the deadline passes with **no submission**, the funder can call
+   `refund()` to reclaim the stake.
 
-* A natural-language rubric
-* A resolution deadline
-* An escrowed GEN stake
+## Why it's structured this way
 
-A worker then submits:
+An earlier version of this contract failed GenVM lint because it used
+`gl.nondet.web.get(url)` to fetch page content, which returns an empty
+body on GenVM and isn't recognized as a valid call inside the
+consensus path. This version uses `gl.nondet.web.render(url,
+mode="text")` instead, which returns decoded text directly and is the
+documented, reliable pattern for nondet web access.
 
-* A deliverable URL
-* An evidence URL
+The contract also binds validators to the **exact payout outcome**
+(verdict + recipient + amount) rather than asking them to approve
+whether the leader's verdict was merely "reasonable" — which is what
+guarantees conflicting settlements can never both be accepted.
 
-After the deadline, Verdict retrieves the submitted web content and asks GenLayer's non-deterministic execution layer to determine whether the deliverable satisfies the rubric.
+## Deploying
 
-The proposed decision is independently validated before the contract finalizes the outcome.
+Deploy via [GenLayer Studio](https://studio.genlayer.com/run-debug)
+with two constructor arguments:
 
-The supported outcomes are:
+- `rubric` (str) — the pass/fail criteria for the deliverable, at
+  least 10 characters.
+- `duration_seconds` (u256) — how long the job stays open for
+  submission before it can be resolved or refunded.
 
-* `pass`
-* `fail`
-* `insufficient_evidence`
+## Methods
 
-If the result is `pass`, the escrowed stake is transferred to the worker.
+| Method | Type | Description |
+|---|---|---|
+| `fund()` | payable write | Funder deposits the stake and starts the deadline. |
+| `submit(deliverable_url, evidence_url)` | write | Worker submits their work before the deadline. Locks after first accepted call. |
+| `resolve()` | write | Callable after the deadline once a submission exists. Runs LLM adjudication + validator consensus and pays out. |
+| `refund()` | write | Callable after the deadline if no submission was made. Returns the stake to the funder. |
+| `get_status`, `get_verdict`, `get_rubric`, `get_stake`, `get_deadline`, `get_funder`, `get_worker`, `get_deliverable_url`, `get_evidence_url`, `get_payout_to`, `get_payout_amount` | view | Read current contract state. |
 
-If the result is `fail` or `insufficient_evidence`, the stake is returned to the funder.
+## Status
 
-## Why GenLayer?
-
-Traditional smart contracts are well suited to deterministic rules, but they cannot natively determine whether a real-world deliverable satisfies a natural-language specification.
-
-Verdict uses GenLayer's Intelligent Contract model for exactly this type of problem:
-
-1. Read external web content.
-2. Interpret a natural-language rubric.
-3. Produce a structured judgment.
-4. Independently validate the proposed judgment.
-5. Reach a consensus-backed result.
-6. Execute an onchain financial consequence.
-
-This makes the contract useful for bounty completion, milestone verification, grants, escrow, content verification, and other situations where the outcome depends on interpreting evidence.
-
-## GenLayer Features Demonstrated
-
-Verdict demonstrates:
-
-* Intelligent Contracts
-* Non-deterministic web access
-* LLM-based reasoning
-* Structured JSON outputs
-* Validator-side verification
-* Optimistic consensus
-* Persistent contract state
-* GEN escrow
-* Native value transfers
-* Finalized consensus transactions
-
-## Contract Lifecycle
-
-```text
-OPEN
-  |
-  | fund()
-  v
-FUNDED
-  |
-  | submit()
-  v
-SUBMITTED
-  |
-  | deadline passes
-  v
-resolve()
-  |
-  | GenLayer web + LLM evaluation
-  v
-PASS / FAIL / INSUFFICIENT_EVIDENCE
-  |
-  +---- PASS ----------------> worker receives stake
-  |
-  +---- FAIL ----------------> funder receives stake
-  |
-  +---- INSUFFICIENT --------> funder receives stake
-```
-
-## Deployed Contract
-
-**Network:** GenLayer Studio / Studionet
-
-**Contract address:**
-
-`0x20EA0A6e9Df705dF368077d5e4FEE8eb1660a21f`
-
-The deployed contract was tested through the complete lifecycle:
-
-1. Contract deployment
-2. Funding with GEN
-3. Worker submission
-4. Deadline enforcement
-5. Web evidence retrieval
-6. LLM adjudication
-7. Validator verification
-8. Consensus finalization
-9. Escrow settlement
-
-The final resolution successfully finalized with the contract reaching the successful verdict state.
-
-## Example Rubric
-
-The deployed demonstration used the following rubric:
-
-> The submitted page must be a public GitHub README containing an Install section and at least one code example.
-
-The contract evaluated the submitted public GitHub README against this requirement.
-
-## Security / Design Notes
-
-Retrieved web pages are treated as evidence rather than instructions.
-
-The adjudication prompts explicitly instruct the model not to follow instructions contained inside retrieved webpages.
-
-The contract also uses a restricted verdict enum rather than allowing arbitrary natural-language output to directly control settlement.
-
-If evidence is insufficient, the contract fails closed by treating the result as unsuccessful rather than paying the worker.
-
-## Repository
-
-Source code and deployment documentation are available in this repository.
-
-## Future Improvements
-
-Potential future versions could include:
-
-* Multiple evidence sources
-* Explicit dispute periods
-* Appeal mechanisms
-* Multiple workers
-* Partial milestone payments
-* More sophisticated rubric schemas
-* A frontend for creating and resolving bounties
-* Reusable bounty templates
-* Onchain reputation for workers and funders
-
-## Author
-
-Built as a GenLayer Builder contribution demonstrating practical Intelligent Contract adjudication.
+Built for the GenLayer Builder Program. Tested end-to-end in GenLayer
+Studio: `fund` → `submit` → `resolve` reaches full validator consensus
+(FINALIZED) with the payout correctly routed based on the verdict.
